@@ -4,6 +4,8 @@ A simple real-time voice analysis tool using Vosk, Parselmouth, Librosa, and Ele
 
 This is a pet project primarily developed for macOS.
 
+![Voice Coach Application Screenshot](screenshot.png)
+
 ## Features
 
 *   Real-time calculation of RMS (volume) and F0 (pitch).
