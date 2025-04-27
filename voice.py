@@ -270,10 +270,17 @@ def analyze_timing(result_dict):
     # Calculate speech rate (words per second), avoid division by zero for very short utterances
     rate = len(words) / total_t if total_t > 0.1 else 0.0
 
-    # Store rounded statistics in the dictionary
+    # --- Calculate Statistics ---
+    # ... (calculations for avg_p, max_p, std_p, avg_d, std_d, rate) ...
+
+    # --- Store rounded statistics, CASTING TO FLOAT ---
     stats = {
-        "avg_pause": round(avg_p, 3), "max_pause": round(max_p, 3), "std_pause": round(std_p, 3),
-        "avg_word_dur": round(avg_d, 3), "std_word_dur": round(std_d, 3), "speech_rate_wps": round(rate, 2)
+        "avg_pause": float(round(avg_p, 3)),
+        "max_pause": float(round(max_p, 3)),
+        "std_pause": float(round(std_p, 3)),
+        "avg_word_dur": float(round(avg_d, 3)),
+        "std_word_dur": float(round(std_d, 3)),
+        "speech_rate_wps": float(round(rate, 2))
     }
 
     # --- Staccato Detection Logic ---
@@ -287,20 +294,20 @@ def analyze_timing(result_dict):
     LONG_PAUSE_ABS_THRESHOLD = 1.0 # seconds
     LONG_PAUSE_REL_FACTOR = 3.0
     if pauses and max_p > LONG_PAUSE_ABS_THRESHOLD and max_p > avg_p * LONG_PAUSE_REL_FACTOR and avg_p > 0:
-        flags.append(f"LongPause({max_p:.2f}s)")
+        staccato_flags.append(f"LongPause({max_p:.2f}s)")
 
     # 2) Variable Pauses: Is the standard deviation of pauses high relative to the
     #    average pause duration (e.g., > 80% of the average)?
     #    Indicates inconsistent timing between words, characteristic of uneven rhythm.
     VAR_PAUSE_REL_THRESHOLD = 0.8
     if pauses and avg_p > 0 and std_p > avg_p * VAR_PAUSE_REL_THRESHOLD:
-        flags.append(f"VarPauses({std_p:.2f}s)")
+        staccato_flags.append(f"VarPauses({std_p:.2f}s)")
 
     # 3) Fast Rate: Is the overall speech rate unusually high (e.g., >4 wps)?
     #    Could indicate rushed speech or short bursts. Normal conversational English is often ~2-3 wps.
     FAST_RATE_THRESHOLD = 4.0 # words per second
     if rate > FAST_RATE_THRESHOLD:
-        flags.append(f"FastRate({rate:.1f}wps)")
+        staccato_flags.append(f"FastRate({rate:.1f}wps)")
 
     # Note: Removed flags for SlowRate and VariableWordDur from previous iteration
     # as they were less directly indicative of the intended "staccato" definition,
@@ -310,13 +317,13 @@ def analyze_timing(result_dict):
     # Require multiple flags (e.g., >= 2) to trigger a staccato alert.
     # This reduces sensitivity to minor variations and requires stronger evidence.
     STACCATO_FLAG_THRESHOLD = 2
-    is_staccato = len(flags) >= STACCATO_FLAG_THRESHOLD
+    is_staccato = len(staccato_flags) >= STACCATO_FLAG_THRESHOLD
 
     # Print simple summary to console (optional, can be removed for pure JSON output)
     # print(f"  [Timing] Stats: AvgP={stats['avg_pause']} MaxP={stats['max_pause']} StdP={stats['std_pause']} Rate={stats['speech_rate_wps']}")
     # if is_staccato: print(f"  [Staccato Alert] Flags: {', '.join(flags)}")
 
-    return stats, flags, is_staccato # Return all computed information
+    return stats, staccato_flags, is_staccato # Return all computed information
 
 
 def analyze_inflection(f0_sequence, sample_rate, chunk_duration):
@@ -359,13 +366,11 @@ def analyze_inflection(f0_sequence, sample_rate, chunk_duration):
         return slope, is_upward
 
     # --- Calculate Slope using Linear Regression ---
-    # Create simple time indices (0, 1, 2...) for the voiced F0 points.
     indices = np.arange(len(voiced_f0))
     try:
-        # Fit a linear polynomial (degree 1) to the voiced F0 data.
-        # polyfit returns [slope, intercept].
-        slope, intercept = np.polyfit(indices, voiced_f0, 1)
-        slope = round(slope, 2) # Round for cleaner output
+        slope_np, intercept = np.polyfit(indices, voiced_f0, 1)
+        # Ensure slope is standard Python float before returning
+        slope = float(round(slope_np, 2))
 
         # --- Upward Inflection Decision ---
         # Define a threshold for what constitutes a significant upward slope.
@@ -383,8 +388,9 @@ def analyze_inflection(f0_sequence, sample_rate, chunk_duration):
     except np.linalg.LinAlgError:
         # Catch errors during the polyfit calculation (e.g., if data is degenerate).
         print("  [Inflection] Could not calculate slope (linear algebra error).", file=sys.stderr)
+        slope = 0.0 # Ensure slope is float even on error
 
-    return slope, is_upward # Return calculated slope and boolean flag
+    return slope, is_upward # Return standard float and boolean
 
 # ------------------------------------
 
@@ -422,9 +428,10 @@ def audio_callback(indata, frames, time_info, status):
     # Send immediate feedback features (RMS, F0) to the frontend via stdout JSON.
     # Rounding values helps reduce JSON message size.
     chunk_payload = {
-        "type": "chunk_features", # Identifier for the frontend
-        "rms": round(current_rms, 4),
-        "f0": round(current_f0, 2)
+        "type": "chunk_features",
+        # Cast NumPy floats to standard Python floats
+        "rms": float(round(current_rms, 4)),
+        "f0": float(round(current_f0, 2))
     }
     # Use flush=True to ensure the output is sent immediately without buffering by Python.
     print(json.dumps(chunk_payload), flush=True)
@@ -473,15 +480,17 @@ def audio_callback(indata, frames, time_info, status):
             # --- Construct and Output Utterance JSON Payload ---
             # Bundle all utterance-level analysis results into a single JSON object.
             utterance_payload = {
-                "type": "utterance_analysis", # Identifier for the frontend
+                "type": "utterance_analysis",
                 "text": final_text,
-                "jitter": round(segment_jitter, 2),
-                "shimmer": round(segment_shimmer, 2),
-                "timing_stats": timing_stats,        # Contains avg/max/std pause, rate etc.
-                "staccato_flags": staccato_flags,    # List of specific reasons for staccato
-                "is_staccato": is_staccato,          # Overall boolean flag for staccato
-                "inflection_slope": inflection_slope,# F0 slope at end of utterance
-                "is_upward_inflection": is_upward_inflection # Boolean flag for upward inflection
+                # Cast NumPy floats to standard Python floats
+                "jitter": float(round(segment_jitter, 2)),
+                "shimmer": float(round(segment_shimmer, 2)),
+                "timing_stats": timing_stats, # Ensure timing_stats values are also floats below
+                "staccato_flags": staccato_flags,
+                "is_staccato": is_staccato,
+                # Cast NumPy float to standard Python float
+                "inflection_slope": float(inflection_slope),
+                "is_upward_inflection": is_upward_inflection
             }
             # Print the combined utterance analysis results to stdout.
             print(json.dumps(utterance_payload), flush=True)
