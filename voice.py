@@ -34,6 +34,10 @@ FMAX = librosa.note_to_hz('C7')
 BUFFER_DURATION_SECONDS = 3 # Analyze jitter/shimmer over the last N seconds on utterance end
 MAX_BUFFER_CHUNKS = None
 audio_buffer = None
+# Add F0 buffer configuration
+F0_BUFFER_DURATION_SECONDS = 3 # Match audio buffer for simplicity, could be different
+MAX_F0_BUFFER_CHUNKS = None
+f0_buffer = None # Will be initialized as a deque
 # ----------------------
 
 
@@ -74,6 +78,10 @@ try:
     audio_buffer = deque(maxlen=MAX_BUFFER_CHUNKS)
     print(f"Audio buffer size: {MAX_BUFFER_CHUNKS} chunks ({BUFFER_DURATION_SECONDS}s)")
 
+    # Initialize F0 buffer
+    MAX_F0_BUFFER_CHUNKS = int(F0_BUFFER_DURATION_SECONDS / CHUNK_DURATION)
+    f0_buffer = deque(maxlen=MAX_F0_BUFFER_CHUNKS)
+    print(f"F0 buffer size: {MAX_F0_BUFFER_CHUNKS} chunks ({F0_BUFFER_DURATION_SECONDS}s)")
 
 except Exception as e:
     print(f"Error during initialization: {e}", file=sys.stderr)
@@ -100,80 +108,91 @@ def calculate_f0_librosa(audio_chunk_float32, sr):
     return avg_f0
 
 def calculate_jitter_shimmer(long_audio_chunk_float32, sr):
-    """Calculates jitter (RAP) and shimmer (local) using Parselmouth."""
+    """Calculates jitter (RAP) and shimmer (local) on a LONGER float32 audio chunk."""
     try:
         snd = parselmouth.Sound(long_audio_chunk_float32.astype(np.float64), sampling_frequency=sr)
         pitch = snd.to_pitch_ac()
+        num_pitch_frames = pitch.get_number_of_frames()
         voiced_frames = pitch.count_voiced_frames()
-        if voiced_frames < 10: return 0.0, 0.0
+        print(f"  [Debug] Pitch object total frames: {num_pitch_frames}")
+        print(f"  [Debug] Pitch object voiced frames: {voiced_frames}")
+
+        if voiced_frames < 10:
+             print("  [Debug] Not enough voiced frames detected in segment.", file=sys.stderr)
+             return 0.0, 0.0
 
         point_process = parselmouth.praat.call([snd, pitch], "To PointProcess (cc)")
         num_points = parselmouth.praat.call(point_process, "Get number of points")
-        if num_points < 2: return 0.0, 0.0
+        print(f"  [Debug] PointProcess points: {num_points}")
+        if num_points < 2:
+            print("  [Debug] Not enough points in PointProcess.", file=sys.stderr)
+            return 0.0, 0.0
 
+        # --- Jitter (RAP) Calculation ---
+        # This command operates only on the PointProcess
         jitter_rap = parselmouth.praat.call(point_process, "Get jitter (rap)", 0.0, 0.0, 0.0001, 0.02, 1.3) * 100
+
+        # --- Shimmer (Local) Calculation ---
+        # *** APPLY THE FIX: Pass BOTH Sound and PointProcess as a list ***
         shimmer_local = parselmouth.praat.call([snd, point_process], "Get shimmer (local)", 0.0, 0.0, 0.0001, 0.02, 1.3, 1.6) * 100
+        # ***
 
         if np.isnan(jitter_rap): jitter_rap = 0.0
         if np.isnan(shimmer_local): shimmer_local = 0.0
         return jitter_rap, shimmer_local
+
     except Exception as e:
-        print(f"Parselmouth calculation error: {e}", file=sys.stderr)
+        print(f"  [Debug] Parselmouth Error: {e}", file=sys.stderr)
         return 0.0, 0.0
 
 def analyze_timing(result_dict):
-    """Analyzes word timings for staccato patterns."""
     words = result_dict.get('result', [])
-    if not words: return # No timing analysis if no words
+    if not words:
+        print("  [Timing] No words found in result.")
+        return
 
+    # collect pauses and durations
     pauses, durs = [], []
-    last_end = words[0]['start'] # Initialize with start of first word for potential initial pause calculation if needed
-    for i, w in enumerate(words):
-        # Ensure timings are valid floats
-        start_time = float(w.get('start', -1))
-        end_time = float(w.get('end', -1))
-        if start_time < 0 or end_time < 0: continue
-
-        # Calculate word duration
-        d = end_time - start_time
-        if d < 0: d = 0 # Duration cannot be negative
+    last_end = words[0]['end']
+    for w in words:
+        d = w['end'] - w['start']
         durs.append(d)
+        p = w['start'] - last_end
+        if p > 0: pauses.append(p)
+        last_end = w['end']
 
-        # Calculate pause before this word (if not the first word)
-        if i > 0:
-             p = start_time - last_end
-             if p < 0: p = 0.0 # Pause cannot be negative
-             pauses.append(p)
+    # compute stats
+    avg_p, max_p, std_p = np.mean(pauses), np.max(pauses), np.std(pauses) if pauses else (0,0,0)
+    avg_d, std_d = np.mean(durs), np.std(durs) if durs else (0,0)
+    total_t = last_end - words[0]['start']
+    rate = len(words) / total_t if total_t>0.1 else 0
 
-        last_end = end_time # Update for next pause calculation
+    print(f"  [Timing] AvgPause={avg_p:.3f}s  MaxPause={max_p:.3f}s  StdPause={std_p:.3f}s")
+    print(f"  [Timing] AvgWordDur={avg_d:.3f}s  StdWordDur={std_d:.3f}s  Rate={rate:.2f} wps")
 
-
-    # Compute stats
-    avg_p, max_p, std_p = np.mean(pauses) if pauses else 0.0, np.max(pauses) if pauses else 0.0, np.std(pauses) if pauses else 0.0
-    avg_d, std_d = np.mean(durs) if durs else 0.0, np.std(durs) if durs else 0.0
-    total_t = last_end - float(words[0].get('start', 0.0)) # Use float for start time
-    rate = len(words) / total_t if total_t > 0.1 else 0.0
-
-    # Print cleaned-up stats
-    print(f"  [Timing] AvgPause={avg_p:.3f}s | MaxPause={max_p:.3f}s | StdPause={std_p:.3f}s")
-    print(f"  [Timing] AvgWordDur={avg_d:.3f}s | StdWordDur={std_d:.3f}s | Rate={rate:.2f} wps")
-
-    # Refined staccato flag logic
     flags = []
-    if pauses and max_p > 1.0 and max_p > avg_p * 3 and avg_p > 0: flags.append(f"LongPause({max_p:.2f}s)")
-    if pauses and avg_p > 0 and std_p > avg_p * 0.8: flags.append(f"VarPauses({std_p:.2f}s)")
-    if rate > 4.0: flags.append(f"FastRate({rate:.1f}wps)")
-    # Removed SlowRate flag
-    # Removed VariableWordDur flag (can be added back if needed)
 
-    if len(flags) >= 2: # Require 2 flags
+    # 1) Long pause > 1.0s AND at least 3× average
+    if pauses and max_p > 1.0 and max_p > avg_p * 3:
+        flags.append(f"LongPause({max_p:.2f}s)")
+
+    # 2) High variability: std_p > 0.8× avg_p
+    if pauses and avg_p>0 and std_p > avg_p * 0.8:
+        flags.append(f"VarPauses({std_p:.2f}s)")
+
+    # 3) Very fast speech > 4 wps
+    if rate > 4.0:
+        flags.append(f"FastRate({rate:.1f}wps)")
+
+    # require at least two flags for a staccato alert
+    if len(flags) >= 2:
         print(f"  [Staccato Alert] {', '.join(flags)}")
 
 # ------------------------------------
 
 def audio_callback(indata, frames, time_info, status):
     """This function is called for each audio chunk."""
-    global recognizer, SAMPLE_RATE, audio_buffer
+    global recognizer, SAMPLE_RATE, audio_buffer, f0_buffer, CHUNK_DURATION
 
     if status:
         print(status, file=sys.stderr)
@@ -186,6 +205,9 @@ def audio_callback(indata, frames, time_info, status):
     audio_float32 = process_audio_chunk_float(indata)
     current_rms = calculate_rms(audio_float32)
     current_f0 = calculate_f0_librosa(audio_float32, SAMPLE_RATE)
+
+    # ** Store F0 value in its buffer **
+    f0_buffer.append(current_f0)
 
     # 3. Print immediate features (RMS, F0)
     print(f"RMS: {current_rms:.4f} | F0: {current_f0:7.2f} Hz          ", end='\r', flush=True)
@@ -216,10 +238,17 @@ def audio_callback(indata, frames, time_info, status):
                 print(f"Segment Jitter (RAP): {segment_jitter:5.2f}% | Segment Shimmer: {segment_shimmer:5.2f}%")
 
             # --- Analyze Word Timing for Staccato ---
+            print(f"  [Debug] Checking Vosk result keys: {list(result_dict.keys())}")
             if 'result' in result_dict:
+                print("  [Debug] 'result' key found, calling analyze_timing...")
                 analyze_timing(result_dict)
             else:
                  print("  [Timing] Word timing information ('result' key) not available in Vosk result.")
+
+            # --- Analyze F0 for Upward Inflection ---
+            # Use the f0_buffer directly (it's already limited by maxlen)
+            print(f"Analyzing F0 trend over the last ~{len(f0_buffer) * CHUNK_DURATION:.2f}s...")
+            analyze_inflection(list(f0_buffer), SAMPLE_RATE, CHUNK_DURATION) # Pass a copy or list
 
             print("="*40 + "\n")
             print(" " * 60, end='\r', flush=True) # Clear line after analysis
