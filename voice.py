@@ -188,8 +188,58 @@ def analyze_timing(result_dict):
     if len(flags) >= 2:
         print(f"  [Staccato Alert] {', '.join(flags)}")
 
+# *** DEFINE analyze_inflection HERE ***
+def analyze_inflection(f0_sequence, sample_rate, chunk_duration):
+    """
+    Analyzes the F0 sequence from the end of an utterance for upward inflection.
+    """
+    print(f"  [Debug Inflection] Received f0_sequence length: {len(f0_sequence)}")
+
+    if not f0_sequence:
+        print("  [Debug Inflection] f0_sequence is empty, exiting.")
+        return
+
+    f0_array = np.array(f0_sequence)
+
+    # *** INCREASE analysis duration to get at least 2 chunks ***
+    analysis_duration_s = 1.25 # Analyze the last 1.25 seconds (approx 2 chunks)
+    # ***
+
+    num_chunks_to_analyze = int(analysis_duration_s / chunk_duration)
+    num_chunks_to_analyze = min(num_chunks_to_analyze, len(f0_array))
+
+    print(f"  [Debug Inflection] num_chunks_to_analyze: {num_chunks_to_analyze}")
+
+    if num_chunks_to_analyze < 2:
+        print("  [Inflection] Not enough data points for trend analysis.")
+        return
+
+    final_f0_segment = f0_array[-num_chunks_to_analyze:]
+    voiced_f0 = final_f0_segment[final_f0_segment > 0]
+
+    print(f"  [Debug Inflection] len(voiced_f0) in final segment: {len(voiced_f0)}")
+
+    if len(voiced_f0) < 2:
+        print("  [Inflection] Not enough voiced data points in final segment.")
+        return
+
+    # --- Slope Calculation ---
+    indices = np.arange(len(voiced_f0))
+    try:
+        slope, intercept = np.polyfit(indices, voiced_f0, 1)
+        print(f"  [Inflection] Analysis Segment F0 Slope: {slope:.2f} Hz/chunk_idx")
+
+        # Define threshold for "significant" upward slope (NEEDS TUNING!)
+        UPWARD_SLOPE_THRESHOLD = 1.5 # Hz rise per index step (highly arbitrary!)
+        if slope > UPWARD_SLOPE_THRESHOLD:
+             print(f"  [Inflection Alert] Potential upward inflection detected (Slope={slope:.2f})")
+
+    except np.linalg.LinAlgError:
+        print("  [Inflection] Could not calculate slope (linear algebra error).")
+
 # ------------------------------------
 
+# *** NOW define audio_callback ***
 def audio_callback(indata, frames, time_info, status):
     """This function is called for each audio chunk."""
     global recognizer, SAMPLE_RATE, audio_buffer, f0_buffer, CHUNK_DURATION
