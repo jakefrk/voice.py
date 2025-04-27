@@ -9,7 +9,9 @@ const rmsValueSpan = document.getElementById('rms-value');
 const f0ValueSpan = document.getElementById('f0-value');
 const wordValueSpan = document.getElementById('word-value');
 const textValueSpan = document.getElementById('text-value');
-const shakinessValueSpan = document.getElementById('shakiness-value');
+const shakinessValueSpan = document.getElementById('shakiness-value'); // Re-added
+// const jitterValueSpan = document.getElementById('jitter-value'); // Removed
+// const shimmerValueSpan = document.getElementById('shimmer-value'); // Removed
 const timingValueSpan = document.getElementById('timing-value');
 const inflectionValueSpan = document.getElementById('inflection-value');
 const statusIndicator = document.getElementById('status-indicator');
@@ -22,14 +24,19 @@ const staccatoBar = document.getElementById('staccato-bar');
 const shakinessBar = document.getElementById('shakiness-bar');
 // const trailingOffBar = document.getElementById('trailing-off-bar'); // Add later
 
+// *** ADDED Detail Element References ***
+const inflectionDetail = document.getElementById('inflection-detail');
+const staccatoDetail = document.getElementById('staccato-detail');
+const shakinessDetail = document.getElementById('shakiness-detail');
+
 // --- State & Config ---
 let isListening = false;
 // let alertTimeout = null; // Removed
-let pulseTimeout = null;
+// let pulseTimeout = null; // Removed
 // let lastPartialText = ''; // No longer needed for pulse
-const RMS_PULSE_MIN_THRESHOLD = 0.005; // ** TUNE ** Minimum RMS to consider for pulsing (avoids noise)
-const RMS_INCREASE_FACTOR = 1.5;   // ** TUNE ** How much RMS needs to increase relative to previous chunk to pulse (e.g., 1.5 = 50% increase)
-let previousRMS = 0.0; // Track previous RMS value
+// const RMS_PULSE_MIN_THRESHOLD = 0.005; // Removed
+// const RMS_INCREASE_FACTOR = 1.5; // Removed
+// let previousRMS = 0.0; // Removed
 const ALERT_DURATION_MS = 2000; // How long alert stays red
 
 // Store timeouts for each bar alert reversion
@@ -51,18 +58,25 @@ function setStatusIndicator(statusClass, statusText) {
     statusIndicator.classList.add(statusClass);
     // Set text content
     statusIcon.textContent = statusText;
+    // Stop CSS animation if not listening
+    statusIndicator.style.animation = (statusClass === 'status-listening') ? '' : 'none';
 }
 
-// Function to set feedback bars to a specific state (neutral, ok, alert)
+// Updated: Now also clears detail text
 function setFeedbackBarsState(stateClass) {
     const bars = [inflectionBar, staccatoBar, shakinessBar /*, trailingOffBar */];
+    const details = [inflectionDetail, staccatoDetail, shakinessDetail]; // Added details array
     bars.forEach(bar => {
         if (bar) {
             bar.classList.remove('neutral', 'ok', 'alert');
             bar.classList.add(stateClass);
         }
     });
-    // Clear any pending alert timeouts when setting a general state
+    // *** Clear Detail Text ***
+    details.forEach(detail => {
+        if (detail) detail.innerHTML = '&nbsp;'; // Use &nbsp; to maintain height
+    });
+    // Clear any pending alert timeouts
     Object.keys(barAlertTimeouts).forEach(key => {
          if (barAlertTimeouts[key]) clearTimeout(barAlertTimeouts[key]);
          barAlertTimeouts[key] = null;
@@ -73,35 +87,29 @@ function setFeedbackBarsState(stateClass) {
 function setListeningVisuals(listening) {
     isListening = listening;
     stopButton.disabled = !listening;
-    setFeedbackBarsState(listening ? 'ok' : 'neutral'); // Set bars state
+    setFeedbackBarsState(listening ? 'ok' : 'neutral'); // Set bars state (also clears details)
 
     if (listening) {
         // updateTopStatus('Listening...'); // Removed
         setStatusIndicator('status-listening', 'Listening'); // Update circle color and text
-        previousRMS = 0.0;
+        // previousRMS = 0.0; // Removed
         // Reset text values on start
         textValueSpan.textContent = '"--"';
         wordValueSpan.textContent = '"--"';
+        // Reset individual Jitter/Shimmer values on start
+        shakinessValueSpan.textContent = 'J: --% | S: --%'; // Reset combined value
     } else {
         // updateTopStatus('Stopped.'); // Removed
         setStatusIndicator('status-stopped', 'Stopped'); // Update circle color and text
         stopButton.disabled = true;
-        previousRMS = 0.0;
+        // previousRMS = 0.0; // Removed
     }
 }
 
 // displayVisualAlert function removed
 
 // Function to trigger the pulse effect
-function triggerPulse() {
-    if (!statusIndicator || !isListening) return;
-    if (pulseTimeout) clearTimeout(pulseTimeout);
-    statusIndicator.classList.add('pulse');
-    pulseTimeout = setTimeout(() => {
-        statusIndicator.classList.remove('pulse');
-        pulseTimeout = null;
-    }, 150);
-}
+// triggerPulse function removed
 
 // Function to update a specific feedback bar's state
 function updateFeedbackBar(barElement, isAlert) {
@@ -114,26 +122,26 @@ function updateFeedbackBar(barElement, isAlert) {
     }
 }
 
-// --- Bar Alert Logic ---
+// Modified: No longer updates barElement, just manages timeout
 function triggerBarAlert(barElement, barKey) {
-    if (!barElement || !isListening) return; // Only alert if listening
+    if (!barElement || !isListening) return;
 
     // Clear existing timeout for this specific bar
     if (barAlertTimeouts[barKey]) {
         clearTimeout(barAlertTimeouts[barKey]);
     }
-
-    // Set to alert state
-    barElement.classList.remove('ok', 'neutral');
-    barElement.classList.add('alert');
+    // Set to alert state (done in utterance_analysis now)
+    // barElement.classList.remove('ok', 'neutral');
+    // barElement.classList.add('alert');
 
     // Set timeout to revert to 'ok' state
     barAlertTimeouts[barKey] = setTimeout(() => {
-        if (isListening) { // Check if still listening before reverting
+        if (isListening && barElement.classList.contains('alert')) { // Check if still listening and alert is active
              barElement.classList.remove('alert');
              barElement.classList.add('ok');
+             // Optionally clear detail text when bar reverts? Or leave it until next utterance? Let's leave it.
         }
-        barAlertTimeouts[barKey] = null; // Clear timeout ID
+        barAlertTimeouts[barKey] = null;
     }, ALERT_DURATION_MS);
 }
 
@@ -143,9 +151,9 @@ stopButton.addEventListener('click', () => {
     stopButton.disabled = true;
     // updateTopStatus('Quitting...'); // Removed
     setStatusIndicator('status-stopped', 'Quitting...'); // Update circle text
-    if (pulseTimeout) clearTimeout(pulseTimeout);
-    statusIndicator.classList.remove('pulse');
-    setFeedbackBarsState('neutral');
+    // if (pulseTimeout) clearTimeout(pulseTimeout); // Removed
+    // statusIndicator.classList.remove('pulse'); // Removed
+    setFeedbackBarsState('neutral'); // Reset bars and clear details
     window.electronAPI.send('quit-app');
 });
 
@@ -167,12 +175,17 @@ window.electronAPI.on('python-data', (data) => {
             f0ValueSpan.textContent = `${data.f0.toFixed(2)} Hz`;
 
             // --- Pulse on RMS Increase (Syllable Proxy) ---
-            if (currentRMS > RMS_PULSE_MIN_THRESHOLD && currentRMS > (previousRMS * RMS_INCREASE_FACTOR)) {
-                triggerPulse();
-            }
-            previousRMS = currentRMS;
+            // if (currentRMS > RMS_PULSE_MIN_THRESHOLD && currentRMS > (previousRMS * RMS_INCREASE_FACTOR)) {
+            //     triggerPulse();
+            // }
+            // previousRMS = currentRMS;
             break;
         case 'utterance_analysis':
+            // --- Reset Details First ---
+            inflectionDetail.innerHTML = '&nbsp;';
+            staccatoDetail.innerHTML = '&nbsp;';
+            shakinessDetail.innerHTML = '&nbsp;';
+
             // Update sentence with quotes
             textValueSpan.textContent = data.text ? `"${data.text}"` : '"--"';
             // Clear word field with quotes
@@ -182,24 +195,60 @@ window.electronAPI.on('python-data', (data) => {
             timingValueSpan.textContent = `Rate: ${data.timing_stats?.speech_rate_wps} wps | Max Pause: ${data.timing_stats?.max_pause}s`;
             inflectionValueSpan.textContent = `Slope: ${data.inflection_slope.toFixed(2)}`;
 
-            // --- Trigger Bar Alerts ---
-            if (data.is_upward_inflection) {
-                triggerBarAlert(inflectionBar, 'inflection');
-            }
-            if (data.is_staccato) {
-                triggerBarAlert(staccatoBar, 'staccato');
+            // --- Update Feedback Bars and Details ---
+            // Inflection
+            if (data.is_upward_inflection && inflectionDetail && data.inflection_detail) {
+                inflectionBar.classList.remove('ok', 'neutral');
+                inflectionBar.classList.add('alert');
+                inflectionDetail.textContent = `End words: ${data.inflection_detail.join(', ')}`;
+                triggerBarAlert(inflectionBar, 'inflection'); // Start revert timer
+            } else if (inflectionBar) {
+                 inflectionBar.classList.remove('alert', 'neutral');
+                 inflectionBar.classList.add('ok'); // Explicitly set OK
             }
 
-            const JITTER_THRESHOLD = 2.5; // Example threshold - TUNE!
-            const SHIMMER_THRESHOLD = 18.0; // Example threshold - TUNE!
+            // Staccato
+            if (data.is_staccato && staccatoBar && staccatoDetail) {
+                staccatoBar.classList.remove('ok', 'neutral');
+                staccatoBar.classList.add('alert');
+                let staccatoMsg = '';
+                // Prioritize showing words after long pauses if available
+                if (data.staccato_detail?.long_pause_words?.length > 0) {
+                     staccatoMsg = `Word(s) after long pause: "${data.staccato_detail.long_pause_words.join('", "')}"`;
+                } else {
+                    // Fallback to general flag descriptions if no long pause words found
+                    // Filter flags to provide slightly better descriptions
+                    let generalFlags = [];
+                    if (data.staccato_flags.some(flag => flag.startsWith('VarPauses'))) {
+                        generalFlags.push("High pause variability");
+                    }
+                    if (data.staccato_flags.some(flag => flag.startsWith('FastRate'))) {
+                        generalFlags.push("High speech rate");
+                    }
+                    staccatoMsg = generalFlags.length > 0 ? generalFlags.join(' & ') : "Staccato pattern detected"; // Default if flags are unexpected
+                }
+                staccatoDetail.textContent = staccatoMsg;
+                triggerBarAlert(staccatoBar, 'staccato'); // Start revert timer
+            } else if (staccatoBar) {
+                staccatoBar.classList.remove('alert', 'neutral');
+                staccatoBar.classList.add('ok'); // Explicitly set OK
+            }
+
+            // Shakiness
+            const JITTER_THRESHOLD = 2.5;
+            const SHIMMER_THRESHOLD = 18.0;
             const isShaky = data.jitter > JITTER_THRESHOLD || data.shimmer > SHIMMER_THRESHOLD;
-            if (isShaky) {
-                triggerBarAlert(shakinessBar, 'shakiness');
+            if (isShaky && shakinessDetail) {
+                 shakinessBar.classList.remove('ok', 'neutral');
+                 shakinessBar.classList.add('alert');
+                 shakinessDetail.textContent = `J: ${data.jitter}%, S: ${data.shimmer}%`; // Show values
+                 triggerBarAlert(shakinessBar, 'shakiness'); // Start revert timer
+            } else if (shakinessBar) {
+                 shakinessBar.classList.remove('alert', 'neutral');
+                 shakinessBar.classList.add('ok'); // Explicitly set OK
             }
 
-            // TODO: Add trailing off logic later
-
-            previousRMS = 0.0; // Reset previous RMS after utterance
+            // previousRMS = 0.0; // Removed
             break;
         case 'partial_text':
              // Update individual word display only
@@ -219,9 +268,8 @@ window.electronAPI.on('python-data', (data) => {
 
 window.electronAPI.on('python-error', (errorMsg) => {
     console.error('Received error from Python backend:', errorMsg);
-    if (pulseTimeout) clearTimeout(pulseTimeout);
-    statusIndicator.classList.remove('pulse');
-    // updateTopStatus(`Error: ${errorMsg.split('\n')[0]}`); // Removed
+    // if (pulseTimeout) clearTimeout(pulseTimeout); // Removed
+    // statusIndicator.classList.remove('pulse'); // Removed
     setStatusIndicator('status-error', 'Error!'); // Set error state in circle
     setListeningVisuals(false); // Set stopped state (resets bars to neutral)
 });
@@ -229,9 +277,8 @@ window.electronAPI.on('python-error', (errorMsg) => {
 window.electronAPI.on('python-status', (statusInfo) => {
      console.log('Received status from Python backend:', statusInfo);
      if (statusInfo.status === 'stopped') {
-         if (pulseTimeout) clearTimeout(pulseTimeout);
-         statusIndicator.classList.remove('pulse');
-         // updateTopStatus('Backend stopped.'); // Removed
+         // if (pulseTimeout) clearTimeout(pulseTimeout); // Removed
+         // statusIndicator.classList.remove('pulse'); // Removed
          setStatusIndicator('status-stopped', 'Stopped'); // Update circle state/text
          setListeningVisuals(false); // Set stopped state (resets bars to neutral)
      }

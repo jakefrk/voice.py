@@ -37,7 +37,13 @@
             margin: 0;
             padding: 8px 15px;
             font-size: 0.9rem;
-            cursor: pointer; border: none; border-radius: 5px; color: white; background-color: #d9534f;
+            cursor: pointer; border: none; border-radius: 5px; color: white;
+            /* Change Quit Button Color */
+            background-color: #6c757d; /* Bootstrap secondary grey */
+            transition: background-color 0.2s ease; /* Add transition */
+        }
+        #controls button:hover {
+             background-color: #5a6268; /* Darker grey on hover */
         }
         button:disabled { background-color: #aaa; cursor: not-allowed; }
 
@@ -120,7 +126,17 @@
          }
 
         /* Right Column Visuals */
-        #status-indicator { width: 100px; height: 100px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 25px; transition: background-color 0.3s ease, transform 0.1s ease-out; }
+        #status-indicator {
+             width: 100px; height: 100px; border-radius: 50%; display: flex; align-items: center; justify-content: center; margin-bottom: 25px;
+             /* Removed transform from base transition */
+             transition: background-color 0.3s ease;
+             /* Apply animation when listening */
+             animation: none; /* Default: no animation */
+        }
+        /* Apply animation only when listening */
+        #status-indicator.status-listening {
+             animation: continuousPulse 2s infinite ease-in-out;
+        }
         /* --- Status Icon now Text --- */
         #status-icon {
             font-size: 1.2rem; /* Adjust font size for text */
@@ -141,15 +157,45 @@
         /* .status-error #status-icon::before { content: "!"; } */
         /* .status-stopped #status-icon::before { content: "■"; } */
 
-        .pulse { transform: scale(1.08); }
+        /* --- Continuous Pulse Animation --- */
+        @keyframes continuousPulse {
+            0% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.7; transform: scale(1.05); }
+            100% { opacity: 1; transform: scale(1); }
+        }
 
         /* Feedback Bars Styles (Unchanged) */
         #feedback-bars { width: 100%; margin-top: 20px; }
-        .feedback-bar-container { margin-bottom: 15px; }
+        /* --- Increased Bar Spacing --- */
+        .feedback-bar-container { margin-bottom: 25px; /* Increased from 15px */ }
         .feedback-bar { height: 30px; width: 100%; border-radius: 5px; overflow: hidden; transition: background-color 0.3s ease; display: flex; align-items: center; justify-content: center; color: white; font-size: 0.85rem; font-weight: bold; text-shadow: 1px 1px 2px rgba(0,0,0,0.4); }
         .feedback-bar.ok { background-color: #5cb85c; }
         .feedback-bar.alert { background-color: #d9534f; }
         .feedback-bar.neutral { background-color: #e9ecef; color: #666; text-shadow: none; }
+
+        /* --- Style for Detail Text --- */
+        .feedback-detail {
+            display: block; /* Ensure it takes its own line */
+            font-size: 0.8rem;
+            font-style: italic;
+            color: #777;
+            margin-top: 4px; /* Space above detail */
+            min-height: 1.1em; /* Reserve a line height */
+            text-align: left; /* Align detail text left */
+            padding-left: 5px; /* Indent slightly */
+        }
+
+        /* --- Style for Help Text --- */
+        .help-text {
+            display: block; /* Put help text on its own line */
+            margin-left: 145px; /* Indent approx same as value (adjust if label width changes) */
+            font-size: 0.75rem; /* Smaller font */
+            color: #888; /* Lighter color */
+            font-style: italic;
+            margin-top: -8px; /* Pull it closer to the label above */
+            margin-bottom: 8px; /* Add space below */
+            line-height: 1.1;
+        }
 
     </style>
 </head>
@@ -196,7 +242,7 @@
              <div class="feature">
                 <span class="label">Jitter / Shimmer:</span>
                 <span class="value" id="shakiness-value">J: --% | S: --%</span>
-            </div>
+             </div>
              <div class="feature">
                 <span class="label">Timing Stats:</span>
                 <span class="value" id="timing-value">--</span>
@@ -209,19 +255,21 @@
 
         <!-- Right Column -->
         <div id="right-column">
-             <div id="status-indicator" class="status-listening">
-                 <!-- Icon span now holds text -->
-                 <span id="status-icon">Starting...</span>
+             <div id="status-indicator" class="status-stopped">
+                 <span id="status-icon">Stopped</span>
              </div>
              <div id="feedback-bars">
                  <div class="feedback-bar-container">
                      <div class="feedback-bar neutral" id="inflection-bar">Upward Inflection</div>
+                     <span class="feedback-detail" id="inflection-detail">&nbsp;</span>
                  </div>
                  <div class="feedback-bar-container">
                      <div class="feedback-bar neutral" id="staccato-bar">Staccato Rhythm</div>
+                     <span class="feedback-detail" id="staccato-detail">&nbsp;</span>
                  </div>
                  <div class="feedback-bar-container">
                      <div class="feedback-bar neutral" id="shakiness-bar">Shakiness</div>
+                     <span class="feedback-detail" id="shakiness-detail">&nbsp;</span>
                  </div>
              </div>
         </div>

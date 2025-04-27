@@ -7,6 +7,8 @@ import os
 import librosa
 import parselmouth
 from collections import deque
+import vosk
+vosk.SetLogLevel(-1)
 
 # --- Configuration Section ---
 # Central place for tweaking parameters without digging through the code.
@@ -220,6 +222,7 @@ def analyze_timing(result_dict):
     Returns:
         timing_stats (dict): Dictionary containing calculated statistics.
         staccato_flags (list): List of strings describing triggered staccato conditions.
+        staccato_details (dict): More specific info about triggers.
         is_staccato (bool): True if staccato pattern is detected based on flag count.
     """
     words = result_dict.get('result', []) # 'result' key holds the list of word timings
@@ -230,9 +233,12 @@ def analyze_timing(result_dict):
         "avg_word_dur": 0.0, "std_word_dur": 0.0, "speech_rate_wps": 0.0
     }
     staccato_flags = []
+    staccato_details = {
+        "long_pause_words": [] # Words *after* a long pause
+    }
     is_staccato = False
 
-    if not words: return stats, staccato_flags, is_staccato # Nothing to analyze
+    if not words: return stats, staccato_flags, staccato_details, is_staccato # Nothing to analyze
 
     pauses = []
     durs = []
@@ -256,6 +262,13 @@ def analyze_timing(result_dict):
              p = start_time - last_end # Time difference between previous word end and current word start
              if p < 0: p = 0.0 # Ensure pause is not negative due to minor timing overlaps
              pauses.append(p)
+
+             # Check for long pause detail
+             LONG_PAUSE_ABS_THRESHOLD = 1.0 # Match threshold below
+             LONG_PAUSE_REL_FACTOR = 3.0
+             avg_p_temp = np.mean(pauses) if pauses else 0.0 # Need temp avg for check
+             if p > LONG_PAUSE_ABS_THRESHOLD and p > avg_p_temp * LONG_PAUSE_REL_FACTOR and avg_p_temp > 0:
+                 staccato_details["long_pause_words"].append(w.get('word', '?'))
 
         last_end = end_time # Update end time for the next iteration
 
@@ -291,8 +304,6 @@ def analyze_timing(result_dict):
     # 1) Long Pause: Is the longest pause both absolutely long (e.g., >1s) and
     #    relatively long compared to the average pause (e.g., >3x)?
     #    Helps flag utterances with significant, isolated hesitations.
-    LONG_PAUSE_ABS_THRESHOLD = 1.0 # seconds
-    LONG_PAUSE_REL_FACTOR = 3.0
     if pauses and max_p > LONG_PAUSE_ABS_THRESHOLD and max_p > avg_p * LONG_PAUSE_REL_FACTOR and avg_p > 0:
         staccato_flags.append(f"LongPause({max_p:.2f}s)")
 
@@ -301,7 +312,7 @@ def analyze_timing(result_dict):
     #    Indicates inconsistent timing between words, characteristic of uneven rhythm.
     VAR_PAUSE_REL_THRESHOLD = 0.8
     if pauses and avg_p > 0 and std_p > avg_p * VAR_PAUSE_REL_THRESHOLD:
-        staccato_flags.append(f"VarPauses({std_p:.2f}s)")
+        staccato_flags.append(f"VarPauses(StdDev={std_p:.2f}s)") # Add detail to flag text itself
 
     # 3) Fast Rate: Is the overall speech rate unusually high (e.g., >4 wps)?
     #    Could indicate rushed speech or short bursts. Normal conversational English is often ~2-3 wps.
@@ -323,10 +334,10 @@ def analyze_timing(result_dict):
     # print(f"  [Timing] Stats: AvgP={stats['avg_pause']} MaxP={stats['max_pause']} StdP={stats['std_pause']} Rate={stats['speech_rate_wps']}")
     # if is_staccato: print(f"  [Staccato Alert] Flags: {', '.join(flags)}")
 
-    return stats, staccato_flags, is_staccato # Return all computed information
+    return stats, staccato_flags, staccato_details, is_staccato # Return all computed information
 
 
-def analyze_inflection(f0_sequence, sample_rate, chunk_duration):
+def analyze_inflection(f0_sequence, sample_rate, chunk_duration, result_dict):
     """
     Analyzes the F0 sequence from the end of an utterance for upward inflection.
     Calculates the linear trend (slope) of the F0 contour over the last part
@@ -334,11 +345,13 @@ def analyze_inflection(f0_sequence, sample_rate, chunk_duration):
     Returns:
         slope (float): The calculated F0 slope (Hz per chunk index).
         is_upward (bool): True if the slope exceeds the upward inflection threshold.
+        detail (list or None): List of last few words if upward, else None.
     """
     slope = 0.0
     is_upward = False
+    detail = None # Initialize detail to None
 
-    if not f0_sequence: return slope, is_upward # Cannot analyze empty sequence
+    if not f0_sequence: return slope, is_upward, detail # Cannot analyze empty sequence
 
     f0_array = np.array(f0_sequence) # Convert deque to numpy array
 
@@ -353,7 +366,7 @@ def analyze_inflection(f0_sequence, sample_rate, chunk_duration):
     # Require at least 2 data points to fit a line for the slope.
     if num_chunks_to_analyze < 2:
         # print("  [Inflection] Not enough data points for trend analysis.")
-        return slope, is_upward
+        return slope, is_upward, detail
 
     # Extract the F0 values for the final segment of the utterance.
     final_f0_segment = f0_array[-num_chunks_to_analyze:]
@@ -363,7 +376,7 @@ def analyze_inflection(f0_sequence, sample_rate, chunk_duration):
     # Need at least 2 *voiced* data points in the final segment to calculate slope.
     if len(voiced_f0) < 2:
         # print("  [Inflection] Not enough voiced data points in final segment.")
-        return slope, is_upward
+        return slope, is_upward, detail
 
     # --- Calculate Slope using Linear Regression ---
     indices = np.arange(len(voiced_f0))
@@ -380,6 +393,11 @@ def analyze_inflection(f0_sequence, sample_rate, chunk_duration):
         UPWARD_SLOPE_THRESHOLD = 1.5
         if slope > UPWARD_SLOPE_THRESHOLD:
             is_upward = True
+            # *** ADDED: Get last 2-3 words if upward inflection detected ***
+            words = result_dict.get('result', [])
+            if words:
+                # Get last 3 words, or fewer if utterance is short
+                detail = [w.get('word', '?') for w in words[-3:]]
 
         # Optional console print for debugging slope value
         # print(f"  [Inflection] Analysis Segment F0 Slope: {slope} Hz/chunk_idx")
@@ -390,7 +408,7 @@ def analyze_inflection(f0_sequence, sample_rate, chunk_duration):
         print("  [Inflection] Could not calculate slope (linear algebra error).", file=sys.stderr)
         slope = 0.0 # Ensure slope is float even on error
 
-    return slope, is_upward # Return standard float and boolean
+    return slope, is_upward, detail # Return standard float and boolean
 
 # ------------------------------------
 
@@ -467,15 +485,17 @@ def audio_callback(indata, frames, time_info, status):
             # Analyze Timing/Staccato using the Vosk word result timings
             timing_stats = {}
             staccato_flags = []
+            staccato_details = {} # Get details dict
             is_staccato = False
             if 'result' in result_dict: # Check if word timings ('result' key) exist
-                timing_stats, staccato_flags, is_staccato = analyze_timing(result_dict)
+                timing_stats, staccato_flags, staccato_details, is_staccato = analyze_timing(result_dict)
 
             # Analyze Inflection using the buffered F0 values
             inflection_slope = 0.0
             is_upward_inflection = False
+            inflection_detail = None # Get details list/None
             if f0_buffer: # Ensure F0 buffer is not empty
-                 inflection_slope, is_upward_inflection = analyze_inflection(list(f0_buffer), SAMPLE_RATE, CHUNK_DURATION)
+                 inflection_slope, is_upward_inflection, inflection_detail = analyze_inflection(list(f0_buffer), SAMPLE_RATE, CHUNK_DURATION, result_dict)
 
             # --- Construct and Output Utterance JSON Payload ---
             # Bundle all utterance-level analysis results into a single JSON object.
@@ -490,7 +510,9 @@ def audio_callback(indata, frames, time_info, status):
                 "is_staccato": is_staccato,
                 # Cast NumPy float to standard Python float
                 "inflection_slope": float(inflection_slope),
-                "is_upward_inflection": is_upward_inflection
+                "is_upward_inflection": is_upward_inflection,
+                "staccato_detail": staccato_details,  # e.g., {"long_pause_words": ["word"]}
+                "inflection_detail": inflection_detail # e.g., ["last", "few", "words"] or None
             }
             # Print the combined utterance analysis results to stdout.
             print(json.dumps(utterance_payload), flush=True)
