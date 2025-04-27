@@ -1,0 +1,14 @@
+   # Python virtual environment
+    venv/
+
+    # Python cache files
+    __pycache__/
+    *.pyc
+    *.pyo
+    *.pyd
+
+    # IDE/Editor specific files (optional but good practice)
+    .vscode/
+    .idea/
+    *.swp
+    *~
